@@ -1,6 +1,11 @@
 # passport-zk-circuits
 
+[![npm version](https://badge.fury.io/js/passport-zk-circuits-noir-js.svg)](https://www.npmjs.com/package/passport-zk-circuits-noir-js)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 JavaScript utilities for processing passport data and generating Zero-Knowledge circuits with Noir. This package provides tools for extracting cryptographic data from electronic passports (eMRTD) and preparing inputs for ZK-SNARK verification circuits.
+
+**npm package:** [`passport-zk-circuits-noir-js`](https://www.npmjs.com/package/passport-zk-circuits-noir-js)
 
 ## Features
 
@@ -16,13 +21,19 @@ JavaScript utilities for processing passport data and generating Zero-Knowledge 
 ## Installation
 
 ```bash
-npm install passport-zk-circuits
+npm install passport-zk-circuits-noir-js
+```
+
+Or with yarn:
+
+```bash
+yarn add passport-zk-circuits-noir-js
 ```
 
 ## Quick Start
 
 ```typescript
-import { processPassport, preparePassportInputs } from 'passport-zk-circuits';
+import { processPassport, preparePassportInputs } from 'passport-zk-circuits-noir-js';
 
 // Option 1: Process passport and write files automatically
 processPassport('./path/to/passport.json');
