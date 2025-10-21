@@ -1,13 +1,60 @@
 {
-  "name": "js",
+  "name": "passport-zk-circuits-noir-js",
   "version": "1.0.0",
-  "main": "asn1.js",
+  "description": "JavaScript utilities for processing passport data and generating Zero-Knowledge circuits with Noir. Supports RSA and ECDSA signature verification, ASN.1 parsing, and Poseidon hashing.",
+  "main": "process_passport.js",
+  "types": "process_passport.d.ts",
   "type": "module",
+  "exports": {
+    ".": {
+      "import": "./process_passport.js",
+      "require": "./process_passport.js",
+      "types": "./process_passport.d.ts"
+    },
+    "./asn1": {
+      "import": "./asn1.js",
+      "require": "./asn1.js"
+    },
+    "./poseidon": {
+      "import": "./poseidon.js",
+      "require": "./poseidon.js"
+    }
+  },
   "scripts": {
     "test": "node process_passport.js"
   },
-  "keywords": [],
+  "files": [
+    "*.js",
+    "*.d.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "passport",
+    "zk",
+    "zero-knowledge",
+    "circuits",
+    "noir",
+    "cryptography",
+    "rsa",
+    "ecdsa",
+    "asn1",
+    "poseidon",
+    "zk-snarks",
+    "identity",
+    "verification"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": ""
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grndd-systems/passport-zk-circuits-noir.git",
+    "directory": "js"
+  },
+  "bugs": {
+    "url": "https://github.com/grndd-systems/passport-zk-circuits-noir/issues"
+  },
+  "homepage": "https://github.com/grndd-systems/passport-zk-circuits-noir#readme",
+  "engines": {
+    "node": ">=16.0.0"
+  }
 }
