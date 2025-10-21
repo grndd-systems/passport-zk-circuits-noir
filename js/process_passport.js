@@ -4,6 +4,9 @@ import { poseidon } from "./poseidon.js";
 import fs from 'fs';
 import { createHash } from 'crypto';
 
+// Re-export ASN.1 utilities for convenience
+export { decoded, Base64, Hex } from "./asn1.js";
+
 
 const reHex = /^\s*(?:[0-9A-Fa-f][0-9A-Fa-f]\s*)+$/
 const resultFile = "../Prover.toml"
@@ -198,44 +201,46 @@ function getEcShift(asn1, ec, hashType){
 
 function getZero(asn1){
 
-    if (!asn1) return null;
-  
-    // Check if this element is '[0]'
-    if (asn1.name === '[0]') {
+ if (!asn1) return null;
 
-      // Check if it has a last 'sub' with 'SEQUENCE' and 'content' is "(2 elem)"
-      if (asn1.sub && asn1.sub[asn1.sub?.length - 1]?.name === 'SEQUENCE' && asn1.sub[asn1.sub?.length - 1]?.content === '(2 elem)') {
-        const sequenceSub = asn1.sub[asn1.sub?.length - 1].sub;
-        
-        // Check the first sub-element: it should be "OBJECT_IDENTIFIER"
-        if (sequenceSub && sequenceSub[0]?.name === 'OBJECT_IDENTIFIER') {
-          
-          // Check the second sub-element: it should be "SET"
-          if (sequenceSub[1]?.name === 'SET') {
-
-            // Check if SET has only one sub-element with name "OCTET_STRING"
-            if (sequenceSub[1]?.sub?.length === 1 && sequenceSub[1]?.sub[0]?.name === 'OCTET_STRING') {
-
-              return asn1;  // Found the element that satisfies the condition
+    // Looking for EXPLICIT [0] inside SignerInfo
+    if (asn1.name === '[0]' && Array.isArray(asn1.sub)) {
+        // Check for sequence with messageDigest
+        for (let seq of asn1.sub) {
+            if (seq.name === 'SEQUENCE' && Array.isArray(seq.sub)) {
+                const oid = seq.sub[0]?.content || '';
+                if (oid.includes('messageDigest')) {
+                    return asn1; // found SignedAttributes
+                }
             }
-          }
         }
-      }
     }
+
     if (Array.isArray(asn1.sub)) {
         for (let child of asn1.sub) {
             const result = getZero(child);
-            if (result) return result;  // Return the first match found
+            if (result) return result;
         }
     }
-    
+
     return null;
 }
 
 function extract_signed_atributes(asn1) {
     let sa = getZero(asn1)
 
-    const hashType = sa.sub.slice(-1)[0].sub.slice(-1)[0].sub[0].length
+    let hashType = null;
+    for (const seq of sa.sub) {
+        if (seq.name === 'SEQUENCE' && Array.isArray(seq.sub)) {
+            const oid = seq.sub[0]?.content || '';
+            if (oid.includes('messageDigest')) {
+                const octet = seq.sub[1]?.sub?.[0]; // OCTET STRING
+                if (octet && octet.length) {
+                    hashType = octet.length; // 20|32|48
+                }
+            }
+        }
+    }
 
     return ["31" + sa.dump.slice(2), hashType]
 }
@@ -463,31 +468,63 @@ function getFakeIdenData(ec, pk){
     return [sk_iden, root, branches]
 }
 
+function formatInputsForNoir(inputs) {
+    return {
+        dg1: "[" + inputs.dg1.toString() + "]",
+        dg15: inputs.dg15.length ? "[" + inputs.dg15.toString() + "]" : "[]",
+        ec: JSON.stringify(inputs.ec),
+        sa: JSON.stringify(inputs.sa),
+        pk: JSON.stringify(inputs.pk.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
+        reduction: JSON.stringify(inputs.reduction.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
+        sig: JSON.stringify(inputs.sig.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
+        sk_identity: "0x" + inputs.sk_identity.toString(16),
+        icao_root: "0x" + inputs.icao_root.toString(16),
+        inclusion_branches: JSON.stringify(inputs.inclusion_branches)
+    }
+}
+
 function writeMainToNoir(inputs, params, name){
+    const formatted = formatInputsForNoir(inputs);
     const res_str = `//${name}\npub mod bignum;\npub mod test_main;\npub mod sigver;\npub mod big_curve;\npub mod rsa;\npub mod sha1;\npub mod sha224;\npub mod sha384;\npub mod rsa_pss;\npub mod jubjub;\npub mod smt;\npub mod utils;\npub mod lite;\nmod not_passports_zk_circuits;\nuse not_passports_zk_circuits::register_identity;\n\nfn main(\n\tdg1: [u8; ${params.dg1_len}],\n\tdg15: [u8; ${params.dg15_len}],\n\tec: [u8; ${params.ec_len}],\n\tsa: [u8; ${params.sa_len}],\n\tpk: [Field; ${params.n}],\n\treduction_pk: [Field; ${params.n}],\n\tsig: [Field; ${params.n}],\n\tsk_identity: Field,\n\ticao_root: Field,\n\tinclusion_branches: [Field; 80]) -> pub (Field, Field, Field, Field, Field){\n\tlet tmp = register_identity::<\n\t\t${params.dg1_len},\n\t\t${params.dg15_len},\n\t\t${params.ec_len},\n\t\t${params.sa_len},\n\t\t${params.n},\n\t\t${params.ec_field_size},\n\t\t${params.dg_hash_type},\n\t\t${params.hash_type},\n\t\t${params.sig_type},\n\t\t${params.dg1_shift},\n\t\t${params.dg15_shift},\n\t\t${params.ec_shift},\n\t\t${params.aa_sig_type},\n\t\t${params.aa_shift}>(\n\tdg1, dg15, ec, sa, pk, reduction_pk, sig, sk_identity, icao_root, inclusion_branches);\n\t(tmp.0, tmp.1, tmp.2, tmp.3, icao_root)\n}`
     fs.writeFile("../src/main.nr", res_str, "utf-8", Error);
 }
 
 function writeTestToNoir(inputs, params, name){
-    const res_str = `//${name}\nuse super::main;\n\n#[test]\nfn test_main(){\n\tprintln(main(\n\t\t${inputs.dg1},\n\t\t${inputs.dg15},\n\t\t${inputs.ec},\n\t\t${inputs.sa},\n\t\t${inputs.pk},\n\t\t${inputs.reduction},\n\t\t${inputs.sig},\n\t\t${inputs.sk_identity},\n\t\t${inputs.icao_root},\n\t\t${inputs.inclusion_branches}))\n}`
+    const formatted = formatInputsForNoir(inputs);
+    const res_str = `//${name}\nuse super::main;\n\n#[test]\nfn test_main(){\n\tprintln(main(\n\t\t${formatted.dg1},\n\t\t${formatted.dg15},\n\t\t${formatted.ec},\n\t\t${formatted.sa},\n\t\t${formatted.pk},\n\t\t${formatted.reduction},\n\t\t${formatted.sig},\n\t\t${formatted.sk_identity},\n\t\t${formatted.icao_root},\n\t\t${formatted.inclusion_branches}))\n}`
     fs.writeFile("../src/test_main.nr", res_str, "utf-8", Error);
 }
 
 
 function writeToToml(inputs){
-    const res_str = `dg1=${inputs.dg1}\ndg15=${inputs.dg15}\nec=${inputs.ec}\nicao_root="${inputs.icao_root}"\ninclusion_branches=${inputs.inclusion_branches}\npk=${inputs.pk}\nreduction_pk=${inputs.reduction}\nsa=${inputs.sa}\nsig=${inputs.sig}\nsk_identity="${inputs.sk_identity}"`.replaceAll(",", `","`).replaceAll("[", `["`).replaceAll("]", `"]`).replace(`dg15=[""]`, "dg15=[]")
+    const formatted = formatInputsForNoir(inputs);
+    const res_str = `dg1=${formatted.dg1}\ndg15=${formatted.dg15}\nec=${formatted.ec}\nicao_root="${formatted.icao_root}"\ninclusion_branches=${formatted.inclusion_branches}\npk=${formatted.pk}\nreduction_pk=${formatted.reduction}\nsa=${formatted.sa}\nsig=${formatted.sig}\nsk_identity="${formatted.sk_identity}"`.replaceAll(",", `","`).replaceAll("[", `["`).replaceAll("]", `"]`).replace(`dg15=[""]`, "dg15=[]")
     fs.writeFile(resultFile, res_str, "utf-8", Error);
     console.log("See " + resultFile + " for test result")
 }
 
-function processPassport(filePath){
-    // Extract json data
-    const json = readJsonFileSync(filePath)
-
+/**
+ * Prepare passport inputs from JSON data
+ * @param {Object} json - Passport JSON data with dg1, dg15 (optional), and sod fields
+ * @returns {Object} Object containing inputs (with numeric values), compile_params, and circuit_name
+ *
+ * The inputs object contains:
+ * - dg1: Array<number> - DG1 data as byte array
+ * - dg15: Array<number> - DG15 data as byte array (empty if not present)
+ * - ec: Array<number> - Encapsulated content as byte array
+ * - sa: Array<number> - Signed attributes as byte array
+ * - pk: Array<bigint> - Public key chunks
+ * - reduction: Array<bigint> - Reduction parameter chunks
+ * - sig: Array<bigint> - Signature chunks
+ * - sk_identity: bigint - Identity secret key
+ * - icao_root: bigint - ICAO root
+ * - inclusion_branches: Array<number> - Inclusion branches
+ */
+function preparePassportInputs(json){
     // Get dg1 and dg15 from json
     const dg1_bytes  = json.dg1? reHex.test(json.dg1) ? Hex.decode(json.dg1) : Base64.unarmor(json.dg1) : [];
-    const dg15_bytes = reHex.test(json.dg15) ? Hex.decode(json.dg15) : Base64.unarmor(json.dg15);
-    
+    const dg15_bytes = json.dg15? (reHex.test(json.dg15) ? Hex.decode(json.dg15) : Base64.unarmor(json.dg15)) : [];
+
     // decode sod
     const asn1_decoded = decoded(json.sod)
     // get ec in hex and bytes
@@ -498,9 +535,9 @@ function processPassport(filePath){
     const [sa_hex, hash_type] = extract_signed_atributes(asn1_decoded)
     const sa_bytes = hexStringToBytes(sa_hex)
 
-    // get signature 
+    // get signature
     const sig = extract_signature(asn1_decoded)
-    
+
     // get ecdsa if r s in sig, else rsa
     const pk = (sig.salt || sig.salt == 0)? extract_rsa_pubkey(asn1_decoded) : extract_ecdsa_pubkey(asn1_decoded)
     // get sig algo
@@ -519,18 +556,18 @@ function processPassport(filePath){
     const chunked = getChunkedParams(pk, sig)
 
     const [sk_iden, icao_root, branches] = getFakeIdenData(ec_bytes, pk)
-    
+
     const inputs = {
-        dg1: "[" + dg1_bytes.toString() + "]",
-        dg15: dg15_bytes.length? "[" + dg15_bytes.toString() + "]" : "[]",
-        ec: JSON.stringify(ec_bytes),
-        sa: JSON.stringify(sa_bytes),
-        pk: JSON.stringify(chunked.pk_chunked.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
-        reduction: JSON.stringify(chunked.reduction.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
-        sig: JSON.stringify(chunked.sig_chunked.map((x) => "0x" + x.toString(16))).replaceAll("\"", ""),
-        sk_identity: "0x" + sk_iden.toString(16),
-        icao_root: "0x" + icao_root.toString(16),
-        inclusion_branches: JSON.stringify(branches)
+        dg1: Array.from(dg1_bytes),
+        dg15: dg15_bytes.length ? Array.from(dg15_bytes) : [],
+        ec: Array.from(ec_bytes),
+        sa: Array.from(sa_bytes),
+        pk: chunked.pk_chunked,
+        reduction: chunked.reduction,
+        sig: chunked.sig_chunked,
+        sk_identity: BigInt("0x" + sk_iden),
+        icao_root: BigInt("0x" + icao_root),
+        inclusion_branches: branches
     }
 
     const compile_params = {
@@ -550,10 +587,62 @@ function processPassport(filePath){
         aa_shift: aa_shift
     }
 
-    const old_naming_convention = `registerIdentity_${compile_params.sig_type}_${dg_hash_type * 8}_${dg1_bytes.length == 93 ? 3 : 1}_${hash_type <= 32? Math.ceil((ec_bytes.length +8)/ 64) : Math.ceil((ec_bytes.length +8) / 128)}_${ec_shift*8}_${dg1_shift*8}_${dg15_bytes.length == 0? "NA" : (aa_sig_type) + "_" + dg15_shift * 8 + "_" + (dg_hash_type <= 32? Math.ceil((dg15_bytes.length + 8) / 64) : Math.ceil((dg15_bytes.length + 8) / 128)) + "_" + aa_shift * 8}`
-    writeMainToNoir(inputs, compile_params, old_naming_convention);
-    writeTestToNoir(inputs, compile_params, old_naming_convention);
+    const circuit_name = `registerIdentity_${compile_params.sig_type}_${dg_hash_type * 8}_${dg1_bytes.length == 93 ? 3 : 1}_${hash_type <= 32? Math.ceil((ec_bytes.length +8)/ 64) : Math.ceil((ec_bytes.length +8) / 128)}_${ec_shift*8}_${dg1_shift*8}_${dg15_bytes.length == 0? "NA" : (aa_sig_type) + "_" + dg15_shift * 8 + "_" + (dg_hash_type <= 32? Math.ceil((dg15_bytes.length + 8) / 64) : Math.ceil((dg15_bytes.length + 8) / 128)) + "_" + aa_shift * 8}`
+
+    return {
+        inputs,
+        compile_params,
+        circuit_name
+    }
+}
+
+function processPassport(filePath){
+    // Extract json data
+    const json = readJsonFileSync(filePath)
+
+    // Prepare inputs
+    const { inputs, compile_params, circuit_name } = preparePassportInputs(json)
+
+    // Write outputs
+    writeMainToNoir(inputs, compile_params, circuit_name);
+    writeTestToNoir(inputs, compile_params, circuit_name);
     writeToToml(inputs);
 }
 
-processPassport(passportFile);
+// Export all functions for use in other modules
+export {
+    computeHash,
+    bigintToArray,
+    compute_barret_reduction,
+    getSigType,
+    hexStringToBytes,
+    readJsonFileSync,
+    getFirstOctetString,
+    extract_encapsulated_content,
+    getDg1Shift,
+    getDg15Shift,
+    getEcShift,
+    getZero,
+    extract_signed_atributes,
+    extract_signature,
+    findParentOfLastOctetString,
+    get_ecdsa_key_location,
+    extract_ecdsa_pubkey,
+    get_rsa_key_location,
+    extract_rsa_pubkey,
+    extractFromDg15,
+    getChunkedParams,
+    getFakeIdenData,
+    formatInputsForNoir,
+    writeMainToNoir,
+    writeTestToNoir,
+    writeToToml,
+    preparePassportInputs,
+    processPassport,
+    poseidon
+};
+
+// Run processPassport if this file is executed directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+    processPassport(passportFile);
+}
